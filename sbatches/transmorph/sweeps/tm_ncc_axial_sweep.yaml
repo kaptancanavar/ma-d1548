@@ -1,0 +1,67 @@
+name: tm_ncc_axial_sweep_1
+project: transmorph
+method: bayes
+
+metric:
+  name: loss/val_total
+  goal: minimize
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.0002
+
+  reg-weight:
+    values: [0.05, 0.1, 0.2]
+
+  axial-weight:
+    values: [0.005, 0.01, 0.02]
+
+  axial-z:
+    values: [1.5, 2.0, 3.0]
+
+  transmorph-variant:
+    values: ["tiny", "small"]
+
+command:
+  - ${env}
+  - /home/students/studunals1/.conda/envs/biopsy_env/bin/python
+  - /home/students/studunals1/biopsy_project/transmorph/scripts/train_transmorph_biopsy_axial.py
+  - --transmorph-repo
+  - /home/students/studunals1/biopsy_project/transmorph/repo/TransMorph_Transformer_for_Medical_Image_Registration
+  - --train-csv
+  - /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/train_lesion_0.csv
+  - --val-csv
+  - /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/val_lesion_0.csv
+  - --out-root
+  - /home/students/studunals1/biopsy_project/transmorph/run
+  - --epochs
+  - "50"
+  - --batch-size
+  - "1"
+  - --num-workers
+  - "4"
+  - --image-loss
+  - ncc
+  - --sim-weight
+  - "1.0"
+  - --axial-x
+  - "1.0"
+  - --axial-y
+  - "1.0"
+  - --axial-penalty
+  - l2
+  - --input-shape
+  - "224"
+  - "224"
+  - "96"
+  - --window-size
+  - "7"
+  - "7"
+  - "3"
+  - --save-every
+  - "10"
+  - --exp-id
+  - TM_NCC_AXIAL_SWEEP
+  - ${args}

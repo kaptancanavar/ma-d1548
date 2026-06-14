@@ -1,0 +1,82 @@
+# --- W&B Ziel ---
+entity: st148315-university-of-stuttgart
+project: "axial_loss_sweep"
+
+program: /home/students/studunals1/biopsy_project/vxm/LOSS_axial_new_sweep/train_vxm_lesion_axis_mse_mmheatmap_sweep.py
+method: bayes
+
+metric:
+  name: metric/val_lesion_err_mm
+  goal: minimize
+
+command:
+  - /home/students/studunals1/.conda/envs/biopsy_env/bin/python
+  - ${program}
+  - ${args}
+
+parameters:
+  # Fixe Datenpfade
+  train_csv:
+    value: /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/train_lesion_0.csv
+  val_csv:
+    value: /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/val_lesion_0.csv
+  nii_json_mapping_csv:
+    value: /home/students/studunals1/biopsy_project/vxm/Analysis/nii_json_mapping.csv
+
+  # Outputs für Sweep-Runs
+  out_root:
+    value: /home/students/studunals1/biopsy_project/vxm/LOSS_axial_new_sweep/run_sweeps
+
+  # Fixe Training-Settings
+  epochs: { value: 50 }
+  batch_size: { value: 1 }
+  num_workers: { value: 4 }
+  image_loss: { value: ncc }
+  input_shape: { value: [224, 224, 96] }
+
+  lesion_loss_mode: { value: axis_mse }
+  lesion_sigma_mm: { value: 2.0 }
+  log_z_slice_error: { value: true }
+  skip_missing_lesion: { value: true }
+
+  early_stop_metric: { value: lesion_err }
+  early_stop_patience: { value: 30 }
+  early_stop_min_delta: { value: 0.001 }
+
+  save_every: { value: 10 }
+
+  # optional: wenn dein Script das liest
+  wandb_project: { value: "axial_loss_sweep" }
+
+  # -------- Sweep-Parameter --------
+  lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 2e-4
+
+  sim_weight:
+    distribution: uniform
+    min: 0.05
+    max: 0.5
+
+  reg_weight:
+    distribution: uniform
+    min: 0.01
+    max: 0.2
+
+  lesion_weight:
+    distribution: uniform
+    min: 0.2
+    max: 3.0
+
+  lesion_beta:
+    values: [1.0, 2.0, 4.0]
+
+  lesion_w_mm:
+    values:
+      - [1.0, 1.0, 1.0]
+      - [1.0, 1.0, 1.5]
+      - [1.0, 1.0, 2.0]
+      - [1.0, 1.0, 3.0]
+
+  phase2_epoch: { value: 0 }

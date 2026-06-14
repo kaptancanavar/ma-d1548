@@ -1,0 +1,63 @@
+method: bayes
+
+metric:
+  name: loss/val_total
+  goal: minimize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10
+
+command:
+  - ${env}
+  - ${interpreter}
+  - train_vxm_baseline.py
+  - --train-csv
+  - /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/train_lesion_0.csv
+  - --val-csv
+  - /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/val_lesion_0.csv
+  - --out-root
+  - /home/students/studunals1/biopsy_project/vxlmrph/run_sweep
+  - --wandb-project
+  - vxm-baseline-sweep
+  - ${args}
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 1.0e-5
+    max: 3.0e-4
+
+  sim_weight:
+    distribution: uniform
+    min: 0.5
+    max: 2.0
+
+  reg_weight:
+    distribution: log_uniform_values
+    min: 1.0e-2
+    max: 2.0e1
+
+  int_steps:
+    values: [0, 1, 2, 4, 7]
+
+  bidir:
+    values: [false, true]
+
+  grad_downsample:
+    values: [1, 2, 4]
+
+  image_loss:
+    values: ["ncc", "mse"]
+
+  batch_size:
+    values: [1, 2]
+
+  num_workers:
+    values: [0, 2, 4]
+
+  early_stop_patience:
+    values: [10, 20, 30]
+
+  early_stop_min_delta:
+    values: [1.0e-4, 5.0e-4, 1.0e-3]

@@ -1,0 +1,46 @@
+method: random
+
+metric:
+  name: loss/val_total
+  goal: minimize
+
+parameters:
+  image-loss:
+    value: mse
+
+  epochs:
+    value: 50
+
+  lr:
+    distribution: log_uniform_values
+    min: 3e-5
+    max: 3e-4
+
+  # MSE braucht oft deutlich kleinere reg_weight als NCC/MI
+  reg-weight:
+    distribution: log_uniform_values
+    min: 1e-3
+    max: 1e-1
+
+  grad-downsample:
+    value: 1
+
+program: /home/students/studunals1/biopsy_project/vxm/scripts/vxm_train_lesion.py
+
+command:
+  - ${env}
+  - /home/students/studunals1/.conda/envs/biopsy_env/bin/python
+  - ${program}
+  - --train-csv
+  - /home/students/studunals1/biopsy_project/vxm/Analysis/train_lesion_0.csv
+  - --val-csv
+  - /home/students/studunals1/biopsy_project/vxm/Analysis/val_lesion_0.csv
+  - --out-root
+  - /home/students/studunals1/biopsy_project/vxm/mse/lesion/run
+  - --input-shape
+  - 224
+  - 224
+  - 96
+  - --exp-id
+  - MSE_SWEEP
+  - ${args}

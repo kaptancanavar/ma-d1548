@@ -1,0 +1,100 @@
+name: GMA_TIP_AXIAL_SWEEP
+program: train_breast_gmaraft3d_LOSS_axial.py
+method: bayes
+
+metric:
+  name: loss/val
+  goal: minimize
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 1.0e-4
+    max: 5.0e-4
+
+  reg-weight:
+    distribution: log_uniform_values
+    min: 1.0e-3
+    max: 5.0e-2
+
+  sim-type:
+    values: ["local_ncc", "mixed"]
+
+  ncc-win:
+    values: [5, 7, 9, 11]
+
+  mixed-alpha:
+    distribution: uniform
+    min: 0.6
+    max: 0.95
+
+  gamma:
+    values: [0.80, 0.85, 0.90]
+
+  jac-weight:
+    values: [0.0, 1.0e-3, 3.0e-3]
+
+  mag-weight:
+    values: [0.0, 1.0e-4, 3.0e-4]
+
+  axial-weight:
+    distribution: log_uniform_values
+    min: 1.0e-5
+    max: 1.0e-2
+
+  axial-mode:
+    values: ["softmax", "anisotropy", "max"]
+
+  axial-temp:
+    values: [0.10, 0.25, 0.50]
+
+command:
+  - ${env}
+  - /home/students/studunals1/.conda/envs/biopsy_env/bin/python
+  - ${program}
+  - --train-csv
+  - /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/train_needletip_0.csv
+  - --val-csv
+  - /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/val_needletip_0.csv
+  - --out-root
+  - /home/students/studunals1/biopsy_project/gmaraft3d/experiments_gmaraft
+  - --epochs
+  - "50"
+  - --batch-size
+  - "1"
+  - --num-workers
+  - "4"
+  - --input-shape
+  - "224"
+  - "224"
+  - "96"
+  - --train-shape
+  - "96"
+  - "96"
+  - "64"
+  - --weight-decay
+  - "5e-05"
+  - --sim-weight
+  - "1.0"
+  - --smooth-frac
+  - "0.5"
+  - --bend-frac
+  - "0.5"
+  - --zclamp
+  - "5"
+  - --flow-clamp
+  - "20"
+  - --grad-clip
+  - "1"
+  - --use-amp
+  - --save-every
+  - "10"
+  - --seed
+  - "42"
+  - --wandb-project
+  - gmaraft_axial_loss
+  - --wandb-group
+  - GMA_TIP_AXIAL_SWEEP
+  - --wandb-mode
+  - online
+  - ${args}

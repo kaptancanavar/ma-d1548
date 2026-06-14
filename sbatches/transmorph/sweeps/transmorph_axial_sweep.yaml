@@ -1,0 +1,60 @@
+entity: st148315-university-of-stuttgart
+project: breast-biopsy-transmorph
+name: TM_AXIAL_NCC_SWEEP_1
+method: bayes
+description: >-
+  Sweep for TransMorph with NCC image loss and additional axial flow loss
+  on preprocessed breast biopsy volumes.
+metric:
+  name: loss/val_total
+  goal: minimize
+run_cap: 18
+
+program: scripts/train_transmorph_biopsy_axial.py
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: !!float 1e-5
+    max: !!float 5e-4
+  reg_weight:
+    values: [0.01, 0.05, 0.1, 0.2]
+  axial_weight:
+    values: [0.0, 0.005, 0.01, 0.02, 0.05]
+  axial_z:
+    values: [1.0, 1.5, 2.0, 3.0, 4.0]
+  transmorph_variant:
+    values: [tiny, small]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --transmorph-repo=/home/students/studunals1/biopsy_project/transmorph/repo/TransMorph_Transformer_for_Medical_Image_Registration
+  - --train-csv=/home/students/studunals1/biopsy_project/transmorph/train_needletip_0.csv
+  - --val-csv=/home/students/studunals1/biopsy_project/transmorph/val_needletip_0.csv
+  - --out-root=/home/students/studunals1/biopsy_project/transmorph/run
+  - --epochs=50
+  - --batch-size=1
+  - --num-workers=4
+  - --lr=${lr}
+  - --image-loss=ncc
+  - --sim-weight=1.0
+  - --reg-weight=${reg_weight}
+  - --axial-weight=${axial_weight}
+  - --axial-x=1.0
+  - --axial-y=1.0
+  - --axial-z=${axial_z}
+  - --axial-penalty=l2
+  - --save-every=10
+  - --input-shape
+  - "224"
+  - "224"
+  - "96"
+  - --window-size
+  - "7"
+  - "7"
+  - "3"
+  - --transmorph-variant=${transmorph_variant}
+  - --exp-id=tm_axial_ncc_sweep
+  - --wandb-project=breast-biopsy-transmorph

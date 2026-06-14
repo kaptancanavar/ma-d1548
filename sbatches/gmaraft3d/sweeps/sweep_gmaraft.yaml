@@ -1,0 +1,67 @@
+entity: st148315-university-of-stuttgart
+project: gmaraft
+program: train_gmaraft_lesion2d_sweep.py
+method: random
+
+metric:
+  name: metric/val_lesion_err_xy_mm
+  goal: minimize
+
+parameters:
+  lr:
+    values: [3e-5, 1e-5, 5e-5]
+  batch_size:
+    values: [2, 4, 6]
+
+  sim_weight:
+    distribution: uniform
+    min: 0.10
+    max: 0.50
+
+  reg_weight:
+    distribution: uniform
+    min: 0.02
+    max: 0.30
+
+  lesion_weight:
+    distribution: uniform
+    min: 0.2
+    max: 2.0
+
+  lesion_sigma_mm:
+    values: [1.0, 1.5, 2.0, 2.5]
+
+  lesion_beta:
+    values: [1.0, 2.0, 4.0, 6.0]
+
+  lesion_z_tol_slices:
+    values: [0, 1, 2]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --gmaraft-repo
+  - /home/students/studunals1/biopsy_project/gmaraft/GMARAFT
+  - --train-csv
+  - /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/train_lesion_0.csv
+  - --val-csv
+  - /mnt/ceph/vol_02_home_students/studunals1/biopsy_project/vxm/Analysis/val_lesion_0.csv
+  - --nii-json-mapping-csv
+  - /home/students/studunals1/biopsy_project/vxm/Analysis/nii_json_mapping.csv
+  - --out-root
+  - /home/students/studunals1/biopsy_project/gmaraft/run
+  - --epochs
+  - "80"
+  - --num-workers
+  - "4"
+  - --image-loss
+  - ncc
+  - --input-shape
+  - "224"
+  - "224"
+  - "96"
+  - --skip-missing-lesion
+  - --wandb-project
+  - axial_loss_sweep
+  - ${args}
