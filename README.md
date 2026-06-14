@@ -1,57 +1,57 @@
-# Breast Biopsy Registration — Masterarbeit
+# Breast Biopsy Registration — Master's Thesis
 
-Code zur deformierbaren Registrierung von Brust-MRT für die Biopsieplanung.
-Ziel ist die genaue Lokalisation von **Läsion** und **Nadelspitze** zwischen
-prä- und intra-interventionellen Aufnahmen. Verglichen werden drei
-Registrierungs-Ansätze:
+Code for deformable registration of breast MRI for biopsy planning.
+The goal is the accurate localization of the **lesion** and the **needle tip**
+between pre- and intra-interventional scans. Three registration approaches are
+compared:
 
-- **GMA-RAFT-3D** — optical-flow-basierte 3D-Registrierung (RAFT mit Global Motion Aggregation)
-- **TransMorph** — Transformer-basiertes Registrierungsnetz
-- **VoxelMorph** — CNN-basiertes unsupervised Registrierungsnetz
+- **GMA-RAFT-3D** — optical-flow-based 3D registration (RAFT with Global Motion Aggregation)
+- **TransMorph** — Transformer-based registration network
+- **VoxelMorph** — CNN-based unsupervised registration network
 
-Beide Aufgaben (Läsion, Nadelspitze) werden mit mehreren Ähnlichkeits-Losses
-untersucht: **MSE / L2**, **NCC** und **MI**, jeweils auch in einer **axialen**
-Variante und einer **2-Phasen**-Variante mit Multi-Modal-Heatmap.
+Both tasks (lesion, needle tip) are studied with several similarity losses:
+**MSE / L2**, **NCC** and **MI**, each also in an **axial** variant and a
+**two-phase** variant with a multi-modal heatmap.
 
-## Struktur
+## Structure
 
-| Ordner | Inhalt |
-|--------|--------|
-| [`GMARAFT_3d/`](GMARAFT_3d/) | GMA-RAFT-3D Codebasis: Netzwerk (`network/`, `network_3d/`), Training (`train/`, `train2/`), Daten-Loader (`loader/`), Configs (`configs/`), Eval (`eval*.py`, `batch_eval.py`), Inferenz/Registrierung (`infer_*.py`, `register_*.py`, `run_pairwise.py`) |
-| [`transmorph/`](transmorph/) | TransMorph-Trainingsskripte: Biopsie (`train_transmorph_biopsy.py`) und axiale Variante (`..._axial.py`) |
-| [`voxelmorph/`](voxelmorph/) | VoxelMorph-Trainingsskripte: Läsion (`vxm_train_lesion.py`), 2-Phasen MSE/L2 (`vxm_lesion_mm_l2_2phase*.py`), axiale Heatmap-Sweep-Variante (`train_vxm_lesion_axis_mse_mmheatmap_sweep.py`) |
-| [`notebooks/`](notebooks/) | Auswertung & Doku-Plots: Distanz-Metriken GT↔Prediction (Läsion/Nadelspitze), Pipeline-Schwellwerte, Doku-Abbildungen |
-| [`sbatches/`](sbatches/) | SLURM-Job- (`jobs/`) und W&B-Sweep-Skripte (`sweeps/`), nach Modell gegliedert: `gmaraft3d/`, `transmorph/`, `vxm/` (letzteres weiter nach Loss `mse`/`ncc`/`mi` und Aufgabe `lesion`/`needletip`) |
+| Folder | Contents |
+|--------|----------|
+| [`GMARAFT_3d/`](GMARAFT_3d/) | GMA-RAFT-3D codebase: network (`network/`, `network_3d/`), training (`train/`, `train2/`), data loaders (`loader/`), configs (`configs/`), evaluation (`eval*.py`, `batch_eval.py`), inference/registration (`infer_*.py`, `register_*.py`, `run_pairwise.py`) |
+| [`transmorph/`](transmorph/) | TransMorph training scripts: biopsy (`train_transmorph_biopsy.py`) and axial variant (`..._axial.py`) |
+| [`voxelmorph/`](voxelmorph/) | VoxelMorph training scripts: lesion (`vxm_train_lesion.py`), two-phase MSE/L2 (`vxm_lesion_mm_l2_2phase*.py`), axial heatmap-sweep variant (`train_vxm_lesion_axis_mse_mmheatmap_sweep.py`) |
+| [`notebooks/`](notebooks/) | Analysis & documentation plots: distance metrics GT↔prediction (lesion/needle tip), pipeline thresholds, documentation figures |
+| [`sbatches/`](sbatches/) | SLURM job (`jobs/`) and W&B sweep scripts (`sweeps/`), organized by model: `gmaraft3d/`, `transmorph/`, `vxm/` (the latter further split by loss `mse`/`ncc`/`mi` and task `lesion`/`needletip`) |
 
-## Umgebung
+## Environment
 
-Python 3.10, PyTorch auf GPU, Conda-Umgebung `biopsy_env`.
+Python 3.10, PyTorch on GPU, Conda environment `biopsy_env`.
 
 ```bash
-conda env create -f environment.yml      # erstellt das Env biopsy_env
+conda env create -f environment.yml      # creates the biopsy_env environment
 conda activate biopsy_env
-# oder reine pip-Abhängigkeiten:
+# or plain pip dependencies:
 pip install -r requirements_frozen.txt
 ```
 
-- [`environment.yml`](environment.yml) — vollständige Conda-Spezifikation.
-- [`requirements_frozen.txt`](requirements_frozen.txt) — eingefrorene pip-Abhängigkeiten.
+- [`environment.yml`](environment.yml) — full Conda specification.
+- [`requirements_frozen.txt`](requirements_frozen.txt) — frozen pip dependencies.
 
 ## Training & Sweeps (SLURM)
 
-Training läuft auf einem SLURM-Cluster mit GPU. Job- und Sweep-Skripte liegen
-gebündelt unter [`sbatches/`](sbatches/):
+Training runs on a SLURM cluster with GPU. Job and sweep scripts are bundled
+under [`sbatches/`](sbatches/):
 
 ```bash
-# Einzeljob abschicken
+# submit a single job
 sbatch sbatches/vxm/ncc/lesion/jobs/vxm_lesion_250.sbatch
 
-# W&B-Sweep starten
+# start a W&B sweep
 wandb sweep sbatches/vxm/ncc/lesion/sweeps/sweep_ncc.yaml
 ```
 
-## Hinweise
+## Notes
 
-- **Patientendaten** (`data/`, `*.nii`, `*.nii.gz`, `*.dcm`) werden niemals committet — siehe [`.gitignore`](.gitignore).
-- Modell-Checkpoints (`*.pth`, `*.ckpt`, `*.h5`) und Trainings-Logs (`wandb/`, `runs/`) sind ebenfalls ausgeschlossen.
-- Die Pfade in den `.sbatch`-Skripten (Conda-Env, Logs, Daten) verweisen auf das Cluster-Setup und müssen für andere Umgebungen angepasst werden.
+- **Patient data** (`data/`, `*.nii`, `*.nii.gz`, `*.dcm`) is never committed — see [`.gitignore`](.gitignore).
+- Model checkpoints (`*.pth`, `*.ckpt`, `*.h5`) and training logs (`wandb/`, `runs/`) are excluded as well.
+- The paths in the `.sbatch` scripts (Conda env, logs, data) refer to the cluster setup and must be adjusted for other environments.
