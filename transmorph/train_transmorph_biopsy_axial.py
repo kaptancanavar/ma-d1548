@@ -24,6 +24,8 @@ Outputs:
       best_model.pth
 """
 
+__author__ = "Semih Tarik Uenal"
+
 import os
 import sys
 import csv

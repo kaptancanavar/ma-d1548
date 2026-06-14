@@ -26,6 +26,8 @@ Empfehlungs-Updates (eingebaut):
 - Lesion-Loss standardmäßig als direkter mm-Abstand (L2) optimierbar via --lesion-loss-mode
 """
 
+__author__ = "Semih Tarik Uenal"
+
 import os
 import sys
 import csv

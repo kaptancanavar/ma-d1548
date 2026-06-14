@@ -1,0 +1,21 @@
+# Patientendaten - NIEMALS committen
+data/
+*.nii
+*.nii.gz
+*.dcm
+
+# grosse Artefakte
+*.pth
+*.h5
+*.ckpt
+__pycache__/
+*.pyc
+
+# Trainings-Logs / Run-Artefakte
+wandb/
+runs/
+*.log
+.ipynb_checkpoints/
+
+# Archive
+*.zip

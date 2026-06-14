@@ -36,6 +36,8 @@ Weitere Updates:
 - Optional: 2-Phasen-Schedule ab --phase2-epoch (Weights + sigma/beta)
 """
 
+__author__ = "Semih Tarik Uenal"
+
 import os
 import sys
 import csv

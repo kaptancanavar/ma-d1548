@@ -1,0 +1,68 @@
+{
+    "project": "CS_vibe",
+    "name": "denoiser_02",
+    "n_gpu": 1,
+    "wandb_entity": "majdhelo",
+    "wandbkey": "38ff1dd3a09ece06626f51a0e25e99adeb124679",
+    "group": "pairwise",
+    "debug": false,
+    
+    "data_loader": {
+        "data_list": "_files.txt",
+        "data_dir": "data",
+        "batch_size": 50,
+        "num_workers": 0,
+        "undersampling_list": [0.88,0.75,0.50]},
+
+    "optimizer": {
+        "type": "AdamW",
+        "args":{
+            "lr": 0.0001,
+            "weight_decay": 0.00005,
+            "amsgrad": true,
+            "eps": 1e-8
+        }
+    },
+
+    "loss_functions": {
+        "args": {
+            "iterative_losses": ["photometric","smooth"],
+            "diffeomorphic": true,
+            "diffeo_weight": 0.025,
+            "iteration_gamma": 0.85,
+            "loss_names": [
+                "photometric",
+                "smooth",
+                "denoiser"
+            ],
+            "loss_weights": [
+                1,
+                0.05,
+                0.2
+            ],
+            "loss_args": {
+                "photometric": {
+                    "mode": "L1"
+                },
+                "smooth": {
+                    "mode": 1
+                },
+                "denoiser": {
+                    "reduction": "mean"
+                }
+            }
+        }
+    },
+
+
+    "trainer": {
+        "epochs": 50,
+        "clip": 1.0,
+        "group": true,
+        "dropout": 0.0,
+        "save_dir": "checkpoints",
+        "resume": false,
+        "gamma": 0.8,
+        "use_mixed_precision": true
+    }
+}

@@ -2,18 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-Train TransMorph on preprocessed MR breast biopsy data using the same CSV setup
-as the user's VoxelMorph training script.
+Training script for 3D VoxelMorph (PyTorch) on preprocessed MR breast biopsy data.
 
-CSV columns required:
-  moving,fixed
+- Uses train_pairs.csv / val_pairs.csv with columns:
+  split,patient_id,study_id,breast_side,moving,fixed,biopsy_img,marker_img
 
-Optional extra columns are ignored.
-
-Expected data:
-  - NIfTI volumes
-  - already preprocessed
-  - default shape: (224, 224, 96)
+Assumes:
+  * 'moving' and 'fixed' paths point to preprocessed NIfTI volumes
+  * volumes have shape (224, 224, 96) by default
+  * data are already RAS + z-score normalised + cropped + resized
 
 Outputs:
   --out-root/run_<timestamp>/
@@ -22,7 +19,14 @@ Outputs:
     checkpoints/
       checkpoint_epoch_XXX.pth
       best_model.pth
+
+W&B project names:
+  mse -> vxm-lesion-mse
+  ncc -> vxm-ncc-lesion
+  mi  -> vxm-lesion-mi
 """
+
+__author__ = "Semih Tarik Uenal"
 
 import os
 import sys
@@ -42,10 +46,20 @@ from torch.utils.tensorboard import SummaryWriter
 
 import wandb
 
+# Make sure VoxelMorph uses PyTorch backend
+os.environ["NEURITE_BACKEND"] = "pytorch"
+os.environ["VXM_BACKEND"] = "pytorch"
+import voxelmorph as vxm  # type: ignore
+
 
 # ---------------- Dataset ---------------- #
 
 class BreastPairDataset(Dataset):
+    """
+    Dataset that reads moving/fixed pairs from a CSV file.
+    CSV must contain at least: moving,fixed
+    """
+
     def __init__(self, csv_path: Path, target_shape: Tuple[int, int, int]):
         super().__init__()
         self.csv_path = Path(csv_path)
@@ -77,7 +91,9 @@ class BreastPairDataset(Dataset):
         img = nib.load(path)
         data = img.get_fdata().astype(np.float32)
 
+        # robustify: remove NaN/Inf & clamp
         data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+        # for z-score-normalised volumes, values should roughly be in [-5, 5]
         data = np.clip(data, -10.0, 10.0)
 
         if data.ndim != 3:
@@ -111,7 +127,7 @@ class BreastPairDataset(Dataset):
 class GlobalNCCLoss(nn.Module):
     """
     Global normalized cross-correlation.
-    Returns loss = -NCC.
+    Returns loss = -NCC (minimize loss -> maximize NCC).
     """
     def __init__(self, eps: float = 1e-5):
         super().__init__()
@@ -121,7 +137,6 @@ class GlobalNCCLoss(nn.Module):
         if x.ndim == 5 and x.shape[1] == 1:
             x = x[:, 0, ...]
             y = y[:, 0, ...]
-
         x = x.reshape(x.shape[0], -1).float()
         y = y.reshape(y.shape[0], -1).float()
 
@@ -140,8 +155,14 @@ class GlobalNCCLoss(nn.Module):
 
 class SoftMILoss(nn.Module):
     """
-    Differentiable soft mutual information.
-    Returns loss = -MI.
+    Differentiable (soft) Mutual Information loss via soft histograms.
+    Uses voxel subsampling for speed.
+
+    Returns loss = -MI (minimize loss -> maximize MI).
+
+    Notes:
+    - Assumes intensities roughly within [-clip, clip] (for z-scored data: clip~5).
+    - If too slow / OOM: reduce --mi-samples or --mi-bins.
     """
     def __init__(self, bins=32, sigma=0.2, samples=20000, clip=5.0, eps=1e-6):
         super().__init__()
@@ -155,7 +176,6 @@ class SoftMILoss(nn.Module):
         if x.ndim == 5 and x.shape[1] == 1:
             x = x[:, 0, ...]
             y = y[:, 0, ...]
-
         x = x.reshape(x.shape[0], -1).float()
         y = y.reshape(y.shape[0], -1).float()
 
@@ -170,6 +190,7 @@ class SoftMILoss(nn.Module):
 
         centers = torch.linspace(-self.clip, self.clip, self.bins, device=x.device).view(1, 1, -1)
 
+        # soft assignment
         sigma = max(self.sigma, 1e-4)
         xw = torch.exp(-0.5 * ((x.unsqueeze(-1) - centers) / sigma) ** 2)
         yw = torch.exp(-0.5 * ((y.unsqueeze(-1) - centers) / sigma) ** 2)
@@ -177,6 +198,7 @@ class SoftMILoss(nn.Module):
         xw = xw / (xw.sum(dim=-1, keepdim=True) + self.eps)
         yw = yw / (yw.sum(dim=-1, keepdim=True) + self.eps)
 
+        # joint histogram p(x,y): (B,bins,bins)
         pxy = torch.bmm(xw.transpose(1, 2), yw) / xw.shape[1]
         px = pxy.sum(dim=2, keepdim=True)
         py = pxy.sum(dim=1, keepdim=True)
@@ -186,126 +208,49 @@ class SoftMILoss(nn.Module):
         return -mi.mean()
 
 
-class Grad3dLoss(nn.Module):
-    """
-    Smoothness loss on displacement field.
-    Similar role as VoxelMorph Grad loss.
-    """
-    def __init__(self, penalty: str = "l2", eps: float = 1e-8):
-        super().__init__()
-        if penalty not in ("l1", "l2"):
-            raise ValueError("penalty must be 'l1' or 'l2'")
-        self.penalty = penalty
-        self.eps = eps
-
-    def forward(self, flow: torch.Tensor) -> torch.Tensor:
-        dy = flow[:, :, 1:, :, :] - flow[:, :, :-1, :, :]
-        dx = flow[:, :, :, 1:, :] - flow[:, :, :, :-1, :]
-        dz = flow[:, :, :, :, 1:] - flow[:, :, :, :, :-1]
-
-        if self.penalty == "l2":
-            dx = dx * dx
-            dy = dy * dy
-            dz = dz * dz
-        else:
-            dx = torch.abs(dx)
-            dy = torch.abs(dy)
-            dz = torch.abs(dz)
-
-        return (dx.mean() + dy.mean() + dz.mean()) / 3.0
-
-
-# ---------------- TransMorph import ---------------- #
-
-def import_transmorph(repo_root: Path):
-    repo_root = Path(repo_root).resolve()
-    tm_root = repo_root / "TransMorph"
-
-    if not repo_root.is_dir():
-        raise FileNotFoundError(f"TransMorph repo root not found: {repo_root}")
-    if not tm_root.is_dir():
-        raise FileNotFoundError(f"Expected folder not found: {tm_root}")
-
-    sys.path.insert(0, str(tm_root))
-
-    from models.TransMorph import TransMorph  # type: ignore
-    import models.configs_TransMorph as configs  # type: ignore
-
-    return TransMorph, configs
-
-
-def get_config_by_variant(configs_module, variant: str):
-    variant = variant.lower()
-
-    candidates = {
-        "tiny": [
-            "get_3DTransMorphTiny_config",
-            "get_3DTransMorph_tiny_config",
-        ],
-        "small": [
-            "get_3DTransMorphSmall_config",
-            "get_3DTransMorph_small_config",
-        ],
-        "base": [
-            "get_3DTransMorph_config",
-            "get_3DTransMorphBase_config",
-            "get_3DTransMorph_base_config",
-        ],
-    }
-
-    if variant not in candidates:
-        raise ValueError(f"Unknown TransMorph variant: {variant}")
-
-    for fn_name in candidates[variant]:
-        if hasattr(configs_module, fn_name):
-            cfg = getattr(configs_module, fn_name)()
-            return cfg, fn_name
-
-    available = [x for x in dir(configs_module) if x.startswith("get_")]
-    raise RuntimeError(
-        f"Could not find config function for variant '{variant}'. "
-        f"Available config builders: {available}"
-    )
-
-
 # ---------------- Utility ---------------- #
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train TransMorph on breast biopsy MRIs.")
+    p = argparse.ArgumentParser(description="Train 3D VoxelMorph on breast biopsy MRIs.")
 
-    # paths
-    p.add_argument("--transmorph-repo", type=str, required=True,
-                   help="Path to official TransMorph repo root.")
-    p.add_argument("--train-csv", type=str, required=True)
-    p.add_argument("--val-csv", type=str, required=True)
-    p.add_argument("--out-root", type=str, required=True)
+    # data & I/O
+    p.add_argument("--train-csv", type=str, default="data/train_pairs.csv")
+    p.add_argument("--val-csv", type=str, default="data/val_pairs.csv")
+    p.add_argument("--out-root", type=str, default="experiments")
 
-    # training
+    # training hyperparameters
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--lr", type=float, default=1e-4)
 
-    p.add_argument("--image-loss", type=str, default="ncc", choices=["mse", "ncc", "mi"])
+    p.add_argument(
+        "--image-loss",
+        type=str,
+        default="mse",
+        choices=["ncc", "mse", "mi"],
+        help="Image similarity loss.",
+    )
     p.add_argument("--sim-weight", type=float, default=1.0)
-    p.add_argument("--reg-weight", type=float, default=0.1)
-    p.add_argument("--save-every", type=int, default=10)
+    p.add_argument("--reg-weight", type=float, default=1.0)
+    p.add_argument("--grad-downsample", type=int, default=1, help="loss_mult for Grad loss (CVPR baseline=1).")
 
     p.add_argument("--input-shape", type=int, nargs=3, default=[224, 224, 96], metavar=("NX", "NY", "NZ"))
-    p.add_argument("--window-size", type=int, nargs=3, default=[7, 7, 3], metavar=("WX", "WY", "WZ"))
+    p.add_argument("--save-every", type=int, default=10)
 
-    p.add_argument("--transmorph-variant", type=str, default="small", choices=["tiny", "small", "base"])
+    p.add_argument("--bidir", action="store_true")
+    p.add_argument("--int-steps", type=int, default=0)
+
     p.add_argument("--exp-id", type=str, default="")
 
-    # MI
+    # MI hyperparameters (used only if --image-loss mi)
     p.add_argument("--mi-bins", type=int, default=32)
     p.add_argument("--mi-sigma", type=float, default=0.2)
     p.add_argument("--mi-samples", type=int, default=20000)
     p.add_argument("--mi-clip", type=float, default=5.0)
 
-    # wandb
-    p.add_argument("--wandb-project", type=str, default="")
-    p.add_argument("--disable-wandb", action="store_true")
+    # W&B optional override
+    p.add_argument("--wandb-project", type=str, default="", help="Override W&B project name (optional).")
 
     return p.parse_args()
 
@@ -318,69 +263,17 @@ def create_experiment_dir(out_root: Path) -> Path:
     return exp_dir
 
 
-def save_config(exp_dir: Path, args: argparse.Namespace, device: torch.device, cfg_name: str):
+def save_config(exp_dir: Path, args: argparse.Namespace, device: torch.device):
     cfg_path = exp_dir / "config.txt"
     with cfg_path.open("w") as f:
         f.write(f"Created: {datetime.now().isoformat()}\n")
         f.write(f"Device: {device}\n")
         f.write(f"Python: {sys.version}\n")
         f.write(f"PyTorch: {torch.__version__}\n")
-        f.write(f"Config builder: {cfg_name}\n")
+        f.write(f"VoxelMorph: {vxm.__version__ if hasattr(vxm, '__version__') else 'unknown'}\n")
         f.write("\nArgs:\n")
         for k, v in vars(args).items():
             f.write(f"{k}: {v}\n")
-
-
-def maybe_init_wandb(args, input_shape, train_csv, val_csv, device):
-    if args.disable_wandb:
-        return None
-
-    loss_to_project = {
-        "mse": "tm-lesion-mse",
-        "ncc": "tm-ncc-lesion",
-        "mi":  "tm-lesion-mi",
-    }
-    wandb_project = args.wandb_project or loss_to_project.get(args.image_loss, "tm-unknown")
-
-    run = wandb.init(
-        project=wandb_project,
-        config={
-            "epochs": args.epochs,
-            "batch_size": args.batch_size,
-            "num_workers": args.num_workers,
-            "lr": args.lr,
-            "image_loss": args.image_loss,
-            "sim_weight": args.sim_weight,
-            "reg_weight": args.reg_weight,
-            "input_shape": input_shape,
-            "window_size": tuple(args.window_size),
-            "variant": args.transmorph_variant,
-            "device": str(device),
-            "train_csv": str(train_csv),
-            "val_csv": str(val_csv),
-            "exp_id": args.exp_id,
-            "mi_bins": args.mi_bins,
-            "mi_sigma": args.mi_sigma,
-            "mi_samples": args.mi_samples,
-            "mi_clip": args.mi_clip,
-        },
-    )
-
-    exp_prefix = f"{args.exp_id}_" if args.exp_id else ""
-    run.name = (
-        exp_prefix
-        + "tm"
-        + f"_{args.transmorph_variant}"
-        + f"_{args.image_loss}"
-        + f"_reg{args.reg_weight:g}"
-        + f"_lr{args.lr:g}"
-        + f"_ep{args.epochs}"
-    )
-
-    if args.image_loss == "mi":
-        run.name += f"_bins{args.mi_bins}_sig{args.mi_sigma:g}_samp{args.mi_samples}"
-
-    return run
 
 
 # ---------------- Training ---------------- #
@@ -389,19 +282,16 @@ def main():
     args = parse_args()
 
     root = Path(__file__).resolve().parents[1]
-    train_csv = Path(args.train_csv).resolve()
-    val_csv = Path(args.val_csv).resolve()
-    out_root = Path(args.out_root).resolve()
-    repo_root = Path(args.transmorph_repo).resolve()
-
+    train_csv = (root / args.train_csv).resolve() if not Path(args.train_csv).is_absolute() else Path(args.train_csv).resolve()
+    val_csv = (root / args.val_csv).resolve() if not Path(args.val_csv).is_absolute() else Path(args.val_csv).resolve()
+    out_root = (root / args.out_root).resolve() if not Path(args.out_root).is_absolute() else Path(args.out_root).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
 
-    print("==== TransMorph Breast Biopsy Training ====")
-    print(f"Script root     : {root}")
-    print(f"TransMorph repo : {repo_root}")
-    print(f"Train CSV       : {train_csv}")
-    print(f"Val CSV         : {val_csv}")
-    print(f"Out root        : {out_root}")
+    print("==== VoxelMorph Breast Biopsy Training ====")
+    print(f"Root dir : {root}")
+    print(f"Train CSV: {train_csv}")
+    print(f"Val CSV  : {val_csv}")
+    print(f"Out root : {out_root}")
     print("-------------------------------------------")
 
     use_cuda = torch.cuda.is_available()
@@ -419,34 +309,61 @@ def main():
     torch.backends.cudnn.benchmark = True
 
     input_shape = tuple(args.input_shape)
-    window_size = tuple(args.window_size)
 
-    # import model
-    TransMorphModel, tm_configs = import_transmorph(repo_root)
-    cfg, cfg_name = get_config_by_variant(tm_configs, args.transmorph_variant)
+    # ---- W&B project per loss (exact names you requested) ----
+    loss_to_project = {
+        "mse": "vxm-lesion-mse",
+        "ncc": "vxm-ncc-lesion",
+        "mi":  "vxm-lesion-mi",
+    }
+    wandb_project = args.wandb_project or loss_to_project.get(args.image_loss, "vxm-unknown")
+    print(f"[W&B] Using project: {wandb_project}")
 
-    # override config for your data
-    if hasattr(cfg, "img_size"):
-        cfg.img_size = input_shape
-    if hasattr(cfg, "window_size"):
-        cfg.window_size = window_size
-    if hasattr(cfg, "in_chans"):
-        cfg.in_chans = 2
+    run = wandb.init(
+        project=wandb_project,
+        config={
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "num_workers": args.num_workers,
+            "lr": args.lr,
+            "image_loss": args.image_loss,
+            "sim_weight": args.sim_weight,
+            "reg_weight": args.reg_weight,
+            "grad_downsample": args.grad_downsample,
+            "input_shape": input_shape,
+            "bidir": args.bidir,
+            "int_steps": args.int_steps,
+            "device": str(device),
+            "train_csv": str(train_csv),
+            "val_csv": str(val_csv),
+            "exp_id": args.exp_id,
+            "mi_bins": args.mi_bins,
+            "mi_sigma": args.mi_sigma,
+            "mi_samples": args.mi_samples,
+            "mi_clip": args.mi_clip,
+        },
+    )
 
-    print(f"Using config builder : {cfg_name}")
-    print(f"Configured img_size  : {getattr(cfg, 'img_size', 'N/A')}")
-    print(f"Configured window    : {getattr(cfg, 'window_size', 'N/A')}")
+    exp_prefix = f"{args.exp_id}_" if args.exp_id else ""
+    run.name = (
+        exp_prefix
+        + "vxm"
+        + f"_{args.image_loss}"
+        + f"_reg{args.reg_weight:g}"
+        + f"_lr{args.lr:g}"
+        + f"_int{args.int_steps}"
+        + f"_bidir{int(args.bidir)}"
+        + f"_ep{args.epochs}"
+    )
+    if args.image_loss == "mi":
+        run.name += f"_bins{args.mi_bins}_sig{args.mi_sigma:g}_samp{args.mi_samples}"
 
-    model = TransMorphModel(cfg).to(device)
-
-    num_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {num_params:,}")
-
-    run = maybe_init_wandb(args, input_shape, train_csv, val_csv, device)
-
-    # datasets
+    # datasets & loaders
     train_ds = BreastPairDataset(train_csv, target_shape=input_shape)
     val_ds = BreastPairDataset(val_csv, target_shape=input_shape)
+
+    wandb.run.summary["num_train_pairs"] = len(train_ds)
+    wandb.run.summary["num_val_pairs"] = len(val_ds)
 
     train_loader = DataLoader(
         train_ds,
@@ -463,42 +380,55 @@ def main():
         pin_memory=use_cuda,
     )
 
-    # losses
-    mse_loss_fn = nn.MSELoss()
+    # model
+    enc_nf = [16, 32, 32, 32]
+    dec_nf = [32, 32, 32, 32, 32, 16]
+    nb_features = [enc_nf, dec_nf]
+
+    model = vxm.networks.VxmDense(
+        inshape=input_shape,
+        nb_unet_features=nb_features,
+        int_steps=args.int_steps,
+        int_downsize=2,
+        bidir=args.bidir,
+    ).to(device)
+
+    # losses (with MSE fallback)
+    mse_loss_fn = vxm.losses.MSE().loss
 
     if args.image_loss == "ncc":
         base_sim_loss_fn = GlobalNCCLoss()
         print("Using Global NCC loss (with MSE fallback on NaN/Inf).")
     elif args.image_loss == "mi":
         base_sim_loss_fn = SoftMILoss(
-            bins=args.mi_bins,
-            sigma=args.mi_sigma,
-            samples=args.mi_samples,
-            clip=args.mi_clip,
+            bins=args.mi_bins, sigma=args.mi_sigma, samples=args.mi_samples, clip=args.mi_clip
         )
         print("Using Soft MI loss (with MSE fallback on NaN/Inf).")
     else:
         base_sim_loss_fn = mse_loss_fn
         print("Using MSE loss.")
 
-    reg_loss_fn = Grad3dLoss(penalty="l2")
+    reg_loss_fn = vxm.losses.Grad("l2", loss_mult=args.grad_downsample).loss
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
+    # AMP only for MSE (NCC/MI are more fragile in mixed precision)
+    if use_cuda:
+        scaler = torch.amp.GradScaler("cuda")
+        autocast_device = "cuda"
+    else:
+        scaler = torch.amp.GradScaler("cpu")
+        autocast_device = "cpu"
     use_autocast = use_cuda and (args.image_loss == "mse")
-    scaler = torch.cuda.amp.GradScaler(enabled=use_autocast)
 
+    # experiment dirs & logging
     exp_dir = create_experiment_dir(out_root)
     ckpt_dir = exp_dir / "checkpoints"
     log_dir = exp_dir / "logs"
 
-    save_config(exp_dir, args, device, cfg_name)
+    save_config(exp_dir, args, device)
     writer = SummaryWriter(log_dir=str(log_dir))
-
-    if run is not None:
-        wandb.run.summary["num_train_pairs"] = len(train_ds)
-        wandb.run.summary["num_val_pairs"] = len(val_ds)
-        wandb.run.summary["exp_dir"] = str(exp_dir)
-        wandb.run.summary["model_parameters"] = int(num_params)
+    wandb.run.summary["exp_dir"] = str(exp_dir)
 
     best_val_loss = float("inf")
 
@@ -516,29 +446,36 @@ def main():
         train_batches = 0
 
         for mv, fx in train_loader:
-            mv = mv.to(device, non_blocking=True)
-            fx = fx.to(device, non_blocking=True)
-
-            x_in = torch.cat((mv, fx), dim=1)
+            mv = mv.to(device)
+            fx = fx.to(device)
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.cuda.amp.autocast(enabled=use_autocast):
-                warped, flow = model(x_in)
+            with torch.amp.autocast(autocast_device, enabled=use_autocast):
+                out = model(mv, fx)
+                if args.bidir:
+                    warp_m2f, warp_f2m, flow_m2f, flow_f2m = out
+                    sim_raw = base_sim_loss_fn(fx, warp_m2f)
+                    if not torch.isfinite(sim_raw):
+                        print("[WARN] sim_loss (train) NaN/Inf -> fallback to MSE for this batch.")
+                        sim_raw = mse_loss_fn(fx, warp_m2f)
+                    sim_loss = sim_raw * args.sim_weight
+                    reg_loss = reg_loss_fn(None, flow_m2f) * args.reg_weight
+                else:
+                    warp, flow = out
+                    sim_raw = base_sim_loss_fn(fx, warp)
+                    if not torch.isfinite(sim_raw):
+                        print("[WARN] sim_loss (train) NaN/Inf -> fallback to MSE for this batch.")
+                        sim_raw = mse_loss_fn(fx, warp)
+                    sim_loss = sim_raw * args.sim_weight
+                    reg_loss = reg_loss_fn(None, flow) * args.reg_weight
 
-                sim_raw = base_sim_loss_fn(fx, warped)
-                if not torch.isfinite(sim_raw):
-                    print("[WARN] sim_loss (train) NaN/Inf -> fallback to MSE for this batch.")
-                    sim_raw = mse_loss_fn(fx, warped)
-
-                sim_loss = sim_raw * args.sim_weight
-                reg_loss = reg_loss_fn(flow) * args.reg_weight
                 loss = sim_loss + reg_loss
 
             if not torch.isfinite(loss):
-                print("\n[ERROR] Non-finite loss detected in TRAIN phase.")
-                print(f"  sim_loss: {sim_loss.detach().cpu().item()}")
-                print(f"  reg_loss: {reg_loss.detach().cpu().item()}")
+                print("\n[ERROR] Non-finite loss detected in TRAIN phase (even after fallback).")
+                print(f"  sim_loss: {sim_loss.detach().cpu().numpy()}")
+                print(f"  reg_loss: {reg_loss.detach().cpu().numpy()}")
                 raise RuntimeError("Loss became NaN/Inf during training.")
 
             scaler.scale(loss).backward()
@@ -563,27 +500,34 @@ def main():
 
         with torch.no_grad():
             for mv, fx in val_loader:
-                mv = mv.to(device, non_blocking=True)
-                fx = fx.to(device, non_blocking=True)
+                mv = mv.to(device)
+                fx = fx.to(device)
 
-                x_in = torch.cat((mv, fx), dim=1)
+                with torch.amp.autocast(autocast_device, enabled=use_autocast):
+                    out = model(mv, fx)
+                    if args.bidir:
+                        warp_m2f, warp_f2m, flow_m2f, flow_f2m = out
+                        sim_raw = base_sim_loss_fn(fx, warp_m2f)
+                        if not torch.isfinite(sim_raw):
+                            print("[WARN] sim_loss (val) NaN/Inf -> fallback to MSE for this batch.")
+                            sim_raw = mse_loss_fn(fx, warp_m2f)
+                        sim_loss = sim_raw * args.sim_weight
+                        reg_loss = reg_loss_fn(None, flow_m2f) * args.reg_weight
+                    else:
+                        warp, flow = out
+                        sim_raw = base_sim_loss_fn(fx, warp)
+                        if not torch.isfinite(sim_raw):
+                            print("[WARN] sim_loss (val) NaN/Inf -> fallback to MSE for this batch.")
+                            sim_raw = mse_loss_fn(fx, warp)
+                        sim_loss = sim_raw * args.sim_weight
+                        reg_loss = reg_loss_fn(None, flow) * args.reg_weight
 
-                with torch.cuda.amp.autocast(enabled=use_autocast):
-                    warped, flow = model(x_in)
-
-                    sim_raw = base_sim_loss_fn(fx, warped)
-                    if not torch.isfinite(sim_raw):
-                        print("[WARN] sim_loss (val) NaN/Inf -> fallback to MSE for this batch.")
-                        sim_raw = mse_loss_fn(fx, warped)
-
-                    sim_loss = sim_raw * args.sim_weight
-                    reg_loss = reg_loss_fn(flow) * args.reg_weight
                     loss = sim_loss + reg_loss
 
                 if not torch.isfinite(loss):
-                    print("\n[ERROR] Non-finite loss detected in VAL phase.")
-                    print(f"  sim_loss: {sim_loss.detach().cpu().item()}")
-                    print(f"  reg_loss: {reg_loss.detach().cpu().item()}")
+                    print("\n[ERROR] Non-finite loss detected in VAL phase (even after fallback).")
+                    print(f"  sim_loss: {sim_loss.detach().cpu().numpy()}")
+                    print(f"  reg_loss: {reg_loss.detach().cpu().numpy()}")
                     raise RuntimeError("Loss became NaN/Inf during validation.")
 
                 val_loss_sum += float(loss.item())
@@ -610,30 +554,28 @@ def main():
         writer.add_scalar("Loss/val_sim", avg_val_sim, epoch)
         writer.add_scalar("Loss/val_reg", avg_val_reg, epoch)
 
-        if run is not None:
-            wandb.log(
-                {
-                    "epoch": epoch,
-                    "loss/train_total": avg_train_loss,
-                    "loss/train_sim": avg_train_sim,
-                    "loss/train_reg": avg_train_reg,
-                    "loss/val_total": avg_val_loss,
-                    "loss/val_sim": avg_val_sim,
-                    "loss/val_reg": avg_val_reg,
-                    "time/epoch_min": elapsed / 60.0,
-                },
-                step=epoch,
-            )
+        wandb.log(
+            {
+                "epoch": epoch,
+                "loss/train_total": avg_train_loss,
+                "loss/train_sim": avg_train_sim,
+                "loss/train_reg": avg_train_reg,
+                "loss/val_total": avg_val_loss,
+                "loss/val_sim": avg_val_sim,
+                "loss/val_reg": avg_val_reg,
+                "time/epoch_min": elapsed / 60.0,
+            },
+            step=epoch,
+        )
 
+        # save best model
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_path = ckpt_dir / "best_model.pth"
             torch.save(model.state_dict(), best_path)
             print(f"  -> New best model saved to {best_path} (val_loss={best_val_loss:.4f})")
-
-            if run is not None:
-                wandb.run.summary["best_val_loss"] = best_val_loss
-                wandb.run.summary["best_model_path"] = str(best_path)
+            wandb.run.summary["best_val_loss"] = best_val_loss
+            wandb.run.summary["best_model_path"] = str(best_path)
 
         if (epoch % args.save_every == 0) or (epoch == args.epochs):
             ckpt_path = ckpt_dir / f"checkpoint_epoch_{epoch:03d}.pth"
@@ -643,17 +585,13 @@ def main():
                     "model_state": model.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
                     "val_loss": avg_val_loss,
-                    "variant": args.transmorph_variant,
-                    "input_shape": input_shape,
-                    "window_size": window_size,
                 },
                 ckpt_path,
             )
             print(f"  -> Checkpoint saved to {ckpt_path}")
 
     writer.close()
-    if run is not None:
-        wandb.finish()
+    wandb.finish()
 
     print("\nTraining finished.")
     print(f"Best validation loss: {best_val_loss:.4f}")

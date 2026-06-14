@@ -29,6 +29,8 @@ Enhancements vs. base script:
 CSV expected columns: moving,fixed (optionally other metadata columns are ignored)
 """
 
+__author__ = "Semih Tarik Uenal"
+
 import os
 import csv
 import time

@@ -1,0 +1,81 @@
+{
+    "project": "CS_vibe",
+    "name": "train_bspline_l1",
+    "n_gpu": 1,
+    "wandb_entity": "majdhelo",
+    "wandbkey": "38ff1dd3a09ece06626f51a0e25e99adeb124679",
+    "group": "pairwise",
+    "debug": false,
+    
+    "data_loader": {
+        "data_list": "_files.txt",
+        "data_dir": "data_3d",
+        "batch_size": 1,
+        "num_workers": 0,
+        "undersampling_list": [], 
+        "undersampling_list1": [0.88,0.75,0.50]}, 
+
+        "optimizer": {
+        "type": "AdamW",
+        "args": {
+            "lr": 1e-5,
+            "weight_decay": 5e-5,
+            "amsgrad": false,
+            "eps": 1e-8
+        }
+        },
+        "lr_scheduler": {
+        "type": "OneCycleLR",
+        "args": {
+            "max_lr": 2.5e-4,
+            "div_factor": 2.5,          
+            "final_div_factor": 125,    
+            "pct_start": 0.1,          
+            "anneal_strategy": "cos",
+            "cycle_momentum": false
+        }
+        },
+
+    "loss_functions": {
+        "args": {
+            "iterative_losses": ["photometric","smooth"],
+            "diffeomorphic": false,
+            "diffeo_weight": 0.025,
+            "iteration_gamma": 0.85,
+            "loss_names": [
+                "photometric",
+                "smooth"
+            ],
+            "loss_weights": [
+                1,
+                0.005,
+                0.2
+            ],
+            "loss_args": {
+                "photometric": {
+                    "mode": "L1"
+                },
+                "smooth": {
+                    "mode": 1,
+                    "boundary_awareness": true,
+                    "alpha": 20
+                },
+                "denoiser": {
+                    "reduction": "mean"
+                }
+            }
+        }
+    },
+
+
+    "trainer": {
+        "epochs": 200,
+        "clip": 1.0,
+        "group": true,
+        "dropout": 0.0,
+        "save_dir": "checkpoints",
+        "resume": false,
+        "gamma": 0.8,
+        "use_mixed_precision": true
+    }
+}

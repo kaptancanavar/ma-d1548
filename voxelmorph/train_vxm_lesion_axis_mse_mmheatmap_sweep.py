@@ -22,6 +22,8 @@ Other features (as in your version):
 - Only ONE wandb.init()
 """
 
+__author__ = "Semih Tarik Uenal"
+
 import os
 import sys
 import csv
